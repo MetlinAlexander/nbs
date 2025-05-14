@@ -104,13 +104,13 @@ runs:
     - name: install dependencies
       shell: bash
       run: |
-        pip install PyGithub==2.5.0 nebius==0.2.28
+        pip install -r .github/scripts/requirements.txt
     - name: create vm
       id: create-vm
       shell: bash
       run: |
         export PYTHONPATH=$PYTHONPATH:$GITHUB_WORKSPACE/.github
-        python3 -m scripts.nebius-manage-vm create ${ORG} ${TEAM} ${VM_ALLOW_DOWNGRADE} \
+        python3 -m scripts.nebius_manage_vm create ${ORG} ${TEAM} ${VM_ALLOW_DOWNGRADE} \
           --github-repo-owner "${REPO_OWNER}" \
           --github-repo "${REPO}" \
           --service-account-key "${SERVICE_ACCOUNT_KEY}" \

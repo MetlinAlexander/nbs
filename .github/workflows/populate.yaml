@@ -5,14 +5,14 @@ on:
     inputs:
       max_vms_to_create:
         description: 'Max VMs to create'
-        type: number
+        type: string
         required: true
-        default: 1
+        default: "1"
       vms_ttl:
         description: 'VMs TTL (seconds)'
-        type: number
+        type: string
         required: true
-        default: 3600
+        default: "86400"
       flavor:
         description: 'Runner flavor'
         type: choice
@@ -40,12 +40,12 @@ on:
         default: 'light'
 
 concurrency:
-  group: 'populate-vms-${{ github.event.inputs.flavor }}'
+  group: 'populate-vms-${{ inputs.flavor }}'
   
 
 env:
   disk_size: ${{ inputs.flavor == 'heavy' && 1023 || 93 }}
-  preset: ${{ inputs.flavor == 'heavy' && '32vcpu-128gb' || '4vcpu-16gb' }}
+  preset: ${{ inputs.flavor == 'heavy' && vars.NEBIUS_VM_PRESET || '4vcpu-16gb' }}
 
 
 jobs:
@@ -71,6 +71,8 @@ jobs:
           vms_ttl: ${{ inputs.vms_ttl }}
           flavor: ${{ inputs.flavor }}
           token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          maximum_amount_of_vms_to_have: ${{ github.repository == 'ydb-platform/nbs' && (vars.MAXIMUM_AMOUNT_OF_VMS_TO_HAVE || '10') || '5' }}
+          extra_vms_if_needed: ${{ vars.EXTRA_VMS_IF_NEEDED || '1' }}
           service_account_key: ${{ secrets.NEW_NEBIUS_SA_JSON_CREDENTIALS }}
   remove_vms:
     needs: calculate_missing_vms
