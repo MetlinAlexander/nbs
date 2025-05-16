@@ -19,6 +19,7 @@ logger = setup_logger()
 
 def filter_instances(instances, runners, args, now_ts):
     vms_to_remove = []
+    broken_to_remove = []
     matched_vm_ids = []
     idle_vm_ids = []
     busy_vm_ids = []
@@ -46,8 +47,7 @@ def filter_instances(instances, runners, args, now_ts):
             continue
 
         vm_id = instance.metadata.id
-        matched_vm_ids.append(vm_id)
-        age = int(now_ts - instance.metadata.created_at.timestamp())
+
         runner = next((r for r in runners if r.name == vm_id), None)
         logger.info(
             "Runner %s found: %s (id: %s, status: %s, busy: %s)",
@@ -57,6 +57,16 @@ def filter_instances(instances, runners, args, now_ts):
             getattr(runner, "status", "N/A"),
             getattr(runner, "busy", "N/A"),
         )
+        if runner is None or runner.status == "offline":
+            logger.info(
+                "Instance %s is not associated with a runner or the runner is offline, marking for removal",
+                vm_id,
+            )
+            broken_to_remove.append(vm_id)
+            continue
+
+        matched_vm_ids.append(vm_id)
+        age = int(now_ts - instance.metadata.created_at.timestamp())
 
         if runner and not runner.busy:
             idle_vm_ids.append(vm_id)
@@ -72,7 +82,7 @@ def filter_instances(instances, runners, args, now_ts):
             logger.info("Instance %s is busy, not marking for removal", vm_id)
             busy_vm_ids.append(vm_id)
 
-    return matched_vm_ids, idle_vm_ids, busy_vm_ids, vms_to_remove
+    return matched_vm_ids, idle_vm_ids, busy_vm_ids, vms_to_remove, broken_to_remove
 
 
 # rules are:
@@ -126,24 +136,72 @@ def decide_scaling(
         return max_vms_to_create, 0, max_vms_to_create
 
     excess_idle = max(0, idle - max_vms_to_create)
+    projected_preview = alive - remove - excess_idle
     idle_remaining = idle - excess_idle
-    projected_preview = alive - remove
 
     to_create = 0
     logger.info(
-        "excess_idle=%d, projected_preview=%d, idle_remaining=%d, busy=%d",
+        "excess_idle=%d, projected_preview=%d, idle_remaining=%d, busy=%d, ",
         excess_idle,
         projected_preview,
         idle_remaining,
         busy,
     )
-    if projected_preview == 0:
+    condition_projected_eq0 = projected_preview == 0
+    condition_not_enough_vms = idle_remaining + busy < max_vms_to_create
+    condition_less_than_maximum = projected_preview < maximum_amount_of_vms_to_have
+    condition_idle_less_than_maximum = idle_remaining < max_vms_to_create
+    condition_alive_minus_busy = alive - busy >= 0
+    condition_extra_vms = (
+        condition_less_than_maximum
+        and condition_idle_less_than_maximum  # noqa: W503
+        and condition_alive_minus_busy  # noqa: W503
+    )
+
+    logger.info(
+        "Conditions: projected_preview(%d) == 0: %s",
+        projected_preview,
+        condition_projected_eq0,
+    )
+    logger.info(
+        "Conditions: idle_remaining(%d) + busy(%d) < max_vms_to_create(%d): %s",
+        idle_remaining,
+        busy,
+        max_vms_to_create,
+        condition_not_enough_vms,
+    )
+    logger.info(
+        "Conditions [1]: projected_preview(%d) < maximum_amount_of_vms_to_have(%d): %s",
+        projected_preview,
+        maximum_amount_of_vms_to_have,
+        condition_less_than_maximum,
+    )
+    logger.info(
+        "Conditions [2]: idle_remaining(%d) < max_vms_to_create(%d): %s",
+        idle_remaining,
+        max_vms_to_create,
+        condition_idle_less_than_maximum,
+    )
+    logger.info(
+        "Conditions [3]: alive(%d) - busy(%d) > 0: %s",
+        alive,
+        busy,
+        condition_alive_minus_busy,
+    )
+    logger.info(
+        "Conditions (combined): [1=%s] and [2=%s] and [3=%s]: %s",
+        condition_less_than_maximum,
+        condition_idle_less_than_maximum,
+        condition_alive_minus_busy,
+        condition_extra_vms,
+    )
+    if condition_projected_eq0:
         to_create = max_vms_to_create
         logger.info(
             "No VMs projected to remain, creating %d VM(s) to meet minimum target",
             to_create,
         )
-    elif idle_remaining + busy < max_vms_to_create:
+    elif condition_not_enough_vms:
         to_create = min(
             max_vms_to_create - (idle_remaining + busy), extra_vms_if_needed
         )
@@ -152,10 +210,7 @@ def decide_scaling(
             idle_remaining + busy,
             to_create,
         )
-    elif (
-        busy >= max(1, projected_preview - 1)
-        and projected_preview < maximum_amount_of_vms_to_have  # noqa: W503
-    ):
+    elif condition_extra_vms:
         to_create = min(
             extra_vms_if_needed, maximum_amount_of_vms_to_have - projected_preview
         )
@@ -201,8 +256,8 @@ async def run(github: Github, sdk: SDK, args: argparse.Namespace):
     logger.info("Fetched %d instances", len(instances))
     runners = list(repo.get_self_hosted_runners())
 
-    matched_vm_ids, idle_vm_ids, busy_vm_ids, vms_to_remove = filter_instances(
-        instances, runners, args, now_ts
+    matched_vm_ids, idle_vm_ids, busy_vm_ids, vms_to_remove, broken_to_remove = (
+        filter_instances(instances, runners, args, now_ts)
     )
 
     logger.info(
@@ -283,6 +338,7 @@ async def run(github: Github, sdk: SDK, args: argparse.Namespace):
 
     github_output(logger, "VMS_TO_REMOVE", json.dumps(to_remove))
     github_output(logger, "VMS_TO_CREATE", json.dumps(vms_to_create))
+    github_output(logger, "BROKEN_VMS_TO_REMOVE", json.dumps(broken_to_remove))
 
     # clean up github runners that doesn't have a matching VM and are offline
     # also remove runners that will be removed, so they won't be used

@@ -1,10 +1,10 @@
 import pytest
+import logging
 from dataclasses import dataclass
-from .helpers import setup_logger
 from .nebius_populate_vms import decide_scaling
 
-logger = setup_logger()
-
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 @dataclass
 class ScalingTestCase:
@@ -157,11 +157,11 @@ class ScalingTestCase:
                 alive=4,
                 idle=2,
                 busy=2,
-                remove=1,
+                remove=0,
                 max_vms_to_create=2,
                 maximum_amount_of_vms_to_have=4,
                 extra_vms_if_needed=1,
-                expected_create=1,
+                expected_create=0,
                 expected_excess_idle=0,
                 expected_projected=4,
                 expect_exception=False,
@@ -327,6 +327,22 @@ class ScalingTestCase:
                 expect_exception=False,
             ),
             id="downscale-to-some-busy-vms",
+        ),
+        pytest.param(
+            ScalingTestCase(
+                alive=2,
+                idle=1,
+                busy=1,
+                remove=0,
+                max_vms_to_create=1,
+                maximum_amount_of_vms_to_have=5,
+                extra_vms_if_needed=1,
+                expected_create=0,
+                expected_excess_idle=0,
+                expected_projected=2,
+                expect_exception=False,
+            ),
+            id="check-if-we-wont-create-vms",
         ),
     ],
 )

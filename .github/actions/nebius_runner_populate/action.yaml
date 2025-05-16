@@ -32,6 +32,9 @@ outputs:
   VMS_TO_REMOVE:
     value: ${{ steps.populate.outputs.VMS_TO_REMOVE }}
     description: "vms to remove"
+  BROKEN_VMS_TO_REMOVE:
+    value: ${{ steps.populate.outputs.BROKEN_VMS_TO_REMOVE }}
+    description: "broken vms to remove"
 
 runs:
   using: composite

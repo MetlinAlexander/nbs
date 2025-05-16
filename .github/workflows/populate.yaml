@@ -56,6 +56,7 @@ jobs:
       running_vms: ${{ steps.list.outputs.RUNNING_VMS_COUNT }}
       vms_to_create: ${{ steps.list.outputs.VMS_TO_CREATE }}
       vms_to_remove: ${{ steps.list.outputs.VMS_TO_REMOVE }}
+      broken_vms_to_remove: ${{ steps.list.outputs.BROKEN_VMS_TO_REMOVE }}
       date: ${{ steps.list.outputs.DATE }}
     steps:
       - name: Checkout
@@ -99,6 +100,31 @@ jobs:
           repo: ${{ github.event.repository.name }}
           vm_parent_id: ${{ vars.NEBIUS_PARENT_ID }}
           vm_id: ${{ matrix.vms_to_remove }}
+  remove_broken:
+    needs: calculate_missing_vms
+    name: Broken VMs
+    if: needs.calculate_missing_vms.outputs.broken_vms_to_remove != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 5
+      matrix:
+        broken_vms_to_remove: ${{ fromJson(needs.calculate_missing_vms.outputs.broken_vms_to_remove) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: '.github'
+      - name: Remove Broken VM ${{ matrix.broken_vms_to_remove }}
+        id: remove-runner
+        uses: ./.github/actions/nebius_runner_remove
+        timeout-minutes: 60
+        with:
+          service_account_key: ${{ secrets.NEW_NEBIUS_SA_JSON_CREDENTIALS }}
+          token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          repo_owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          vm_parent_id: ${{ vars.NEBIUS_PARENT_ID }}
+          vm_id: ${{ matrix.broken_vms_to_remove }}
   populate_vms:
     needs: calculate_missing_vms
     name: Populate VMs
