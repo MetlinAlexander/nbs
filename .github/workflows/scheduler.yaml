@@ -1,5 +1,5 @@
-name: Populate VMs
-run-name: Populate VMs ${{ inputs.flavor }}
+name: Scheduler
+run-name: Scheduler ${{ inputs.flavor }}
 on:
   workflow_dispatch:
     inputs:
@@ -65,7 +65,7 @@ env:
 
 jobs:
   calculate_missing_vms:
-    name: Calculate missing VMs
+    name: Schedule ${{ inputs.flavor }} runners
     runs-on: ${{ inputs.provision_mode == 'initial' && fromJson('["ubuntu-latest"]') || fromJson('["self-hosted", "runner_light"]') }}
     outputs:
       running_vms: ${{ steps.list.outputs.RUNNING_VMS_COUNT }}
@@ -92,9 +92,12 @@ jobs:
           service_account_key: ${{ secrets.NEW_NEBIUS_SA_JSON_CREDENTIALS }}
   remove_vms:
     needs: calculate_missing_vms
-    name: Remove VMs
+    name: Remove ${{ inputs.flavor }} VMs
     if: needs.calculate_missing_vms.outputs.vms_to_remove != '[]'
-    runs-on: ${{ inputs.provision_mode == 'initial' && fromJson('["ubuntu-latest"]') || fromJson('["self-hosted", "runner_light"]') }}
+    # it is important to use ubuntu-latest here, because it could happen that runner
+    # will be scheduled with task of removing itself and since it will be busy
+    # in github api, it will not be able to remove itself
+    runs-on: "ubuntu-latest"
     strategy:
       max-parallel: 5
       matrix:
@@ -117,7 +120,7 @@ jobs:
           vm_id: ${{ matrix.vms_to_remove }}
   remove_broken:
     needs: calculate_missing_vms
-    name: Broken VMs
+    name: Broken ${{ inputs.flavor }} VMs
     if: needs.calculate_missing_vms.outputs.broken_vms_to_remove != '[]'
     runs-on: ${{ inputs.provision_mode == 'initial' && fromJson('["ubuntu-latest"]') || fromJson('["self-hosted", "runner_light"]') }}
     strategy:
@@ -140,9 +143,9 @@ jobs:
           repo: ${{ github.event.repository.name }}
           vm_parent_id: ${{ vars.NEBIUS_PARENT_ID }}
           vm_id: ${{ matrix.broken_vms_to_remove }}
-  populate_vms:
+  create_vms:
     needs: calculate_missing_vms
-    name: Populate VMs
+    name: Create ${{ inputs.flavor }} VMs
     if: needs.calculate_missing_vms.outputs.vms_to_create != '[]'
     runs-on: ${{ inputs.provision_mode == 'initial' && fromJson('["ubuntu-latest"]') || fromJson('["self-hosted", "runner_light"]') }}
     strategy:

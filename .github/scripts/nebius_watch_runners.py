@@ -1,13 +1,41 @@
 #!/usr/bin/env python3
 import os
+import asyncio
 import argparse
 from github import Github
 from tabulate import tabulate
+from .helpers import (
+    setup_logger,
+    get_jobs_raw,
+    compact_workflow_name,
+    compact_job_name,
+    date_to_hms,
+)
+import datetime
+
+from nebius.sdk import SDK
+from nebius.aio.service_error import RequestError
+from nebius.api.nebius.compute.v1 import (
+    InstanceServiceClient,
+    GetInstanceRequest,
+)
+
+logger = setup_logger()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Show self-hosted runners and their active jobs."
+    )
+    parser.add_argument(
+        "--api-endpoint",
+        default="api.ai.nebius.cloud",
+        help="Cloud API Endpoint",
+    )
+    parser.add_argument(
+        "--service-account-key",
+        required=True,
+        help="Path to the service account key file",
     )
     parser.add_argument("--owner", required=True, help="GitHub organization or user")
     parser.add_argument("--repo", required=True, help="GitHub repository name")
@@ -17,7 +45,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+async def main():
     args = parse_args()
     token = args.token or os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -25,6 +53,9 @@ def main():
             "Error: GitHub token must be provided with --token or GITHUB_TOKEN environment variable."
         )
         exit(1)
+
+    sdk = SDK(credentials_file_name=args.service_account_key)
+    service = InstanceServiceClient(sdk)
 
     g = Github(token)
     repo = g.get_repo(f"{args.owner}/{args.repo}")
@@ -37,14 +68,15 @@ def main():
     workflow_runs = repo.get_workflow_runs(status="in_progress")
 
     for run in workflow_runs:
-        for job in run.jobs():
+        for job in get_jobs_raw(token, repo.full_name, run.id):
             if job.status in ("in_progress", "queued") and job.runner_name:
                 active_jobs[job.runner_name] = {
                     "job_name": job.name,
                     "job_id": job.id,
+                    "job_took_raw": job.created_at,
+                    "job_took_real": job.started_at,
                     "run_id": run.id,
                     "workflow": run.name,
-                    "html_url": job.html_url,
                 }
 
     # Prepare data
@@ -55,6 +87,16 @@ def main():
         status = runner.status
         busy = runner.busy
         current_job = active_jobs.get(name)
+        took_real = (
+            current_job["job_took_real"]
+            if current_job
+            else datetime.datetime.now(tz=datetime.timezone.utc)
+        )
+        took_raw = (
+            current_job["job_took_raw"]
+            if current_job
+            else datetime.datetime.now(tz=datetime.timezone.utc)
+        )
         runner_label = ", ".join(
             label["name"]
             for label in runner.labels()
@@ -69,34 +111,57 @@ def main():
         job_id = f'{current_job["job_id"]}' if current_job else ""
         workflow_id = f'{current_job["run_id"]}' if current_job else ""
 
+        # calculate age of the instance
+        try:
+            response = await service.get(GetInstanceRequest(id=name))
+        except RequestError:
+            logger.error(f"Error fetching instance {runner_id}")
+
+        age_str = date_to_hms(response.metadata.created_at)
+
+        ip = "N/A"
+        if response.status.state.name == "RUNNING":
+            ip = response.status.network_interfaces[0].public_ip_address.address
+            ip = ip.split("/")[0]
+
         table.append(
             [
                 runner_id,
+                age_str,
+                ip,
                 name,
                 status,
-                busy,
-                runner_label,
-                job_info,
-                job_id,
-                workflow_info,
+                "BUSY" if busy else "FREE",
+                runner_label.replace("runner_", "").strip(),
+                compact_workflow_name(workflow_info),
+                compact_job_name(job_info),
                 workflow_id,
+                job_id,
+                date_to_hms(took_real),
+                date_to_hms(took_raw),
             ]
         )
+    # sort by type and then by id
+    table = sorted(table, key=lambda x: (x[6], x[0]))
 
     # Display
     headers = [
         "ID",
+        "Age",
+        "IP",
         "Runner Name",
         "Status",
         "Busy",
-        "Runner Label",
-        "Job",
-        "Job ID",
+        "Type",
         "Workflow",
+        "Job",
         "Workflow ID",
+        "Job ID",
+        "Real Time",
+        "Raw Time",
     ]
     print(tabulate(table, headers=headers))
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
