@@ -60,6 +60,10 @@ inputs:
     required: false
     default: "1"
     description: "Number of retries for ya make"
+outputs:
+  failed_tests:
+    description: "List of failed tests"
+    value: ${{ steps.check_test_results.outputs.failed_tests }}
 
 runs:
   using: composite
@@ -68,7 +72,7 @@ runs:
       shell: bash --noprofile --norc -eo pipefail -x {0}
       id: init
       run: |
-        export TMP_DIR=/home/github/tmp-${GITHUB_RUN_ID}
+        export TMP_DIR=/home/github/tmp_test
         {
           echo "TMP_DIR=$TMP_DIR"
           echo "LOG_DIR=$TMP_DIR/logs"
@@ -212,6 +216,9 @@ runs:
         echo "RETRIES=${RETRIES}" | tee -a "$GITHUB_ENV"
         RETRY_FLAG=""
         i=0
+        # setting variable in case that test will be interrupter by OOM killer that
+        # will kill VM with runner
+        echo "failed_tests=yes" >> $GITHUB_OUTPUT
         while [ "$RETRIES" -gt 0 ]; do
           RETRIES=$((RETRIES - 1))
           i=$((i + 1))
@@ -281,6 +288,8 @@ runs:
             break
           fi
         done
+        echo "failed_tests=no" >> $GITHUB_OUTPUT
+
 
     - name: copying system files
       if: ${{ !cancelled() }}
@@ -563,14 +572,4 @@ runs:
                                     $SUMMARY_OUT_ENV_PATH $SUMMARY_LINKS
         chown -R root:root $GITHUB_WORKSPACE 
         echo "::endgroup::"
-    # remove it after leak will be fixed
-    - name: reboot after tests
-      if: always()
-      shell: bash --noprofile --norc -eo pipefail -x {0}
-      run: |
-        echo "::group::reboot"
-        (
-          sleep 15;
-          sudo reboot;
-        )&
-        echo "::endgroup::"
+
