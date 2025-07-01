@@ -7,12 +7,14 @@
 #include <cloud/blockstore/libs/diagnostics/volume_stats_test.h>
 #include <cloud/blockstore/libs/service/device_handler.h>
 #include <cloud/blockstore/libs/service/storage_test.h>
+
 #include <cloud/storage/core/libs/common/error.h>
 #include <cloud/storage/core/libs/common/sglist_test.h>
 #include <cloud/storage/core/libs/diagnostics/logging.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
+#include <util/datetime/base.h>
 #include <util/folder/path.h>
 #include <util/generic/guid.h>
 #include <util/generic/scope.h>
@@ -492,11 +494,11 @@ Y_UNIT_TEST_SUITE(TServerTest)
             options.VhostQueuesCount = 1;
             options.UnalignedRequestsDisabled = false;
 
-            auto future = vhostServer->StartEndpoint(
+            auto futureStartEndpoint = vhostServer->StartEndpoint(
                 socket.GetPath(),
                 std::make_shared<TTestStorage>(),
                 options);
-            const auto& error = future.GetValue(TDuration::Seconds(5));
+            const auto& error = futureStartEndpoint.GetValue(TDuration::Seconds(5));
             UNIT_ASSERT_C(!HasError(error), error);
         }
 

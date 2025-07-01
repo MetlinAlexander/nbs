@@ -5,8 +5,11 @@
 #include <cloud/contrib/vhost/include/vhost/blockdev.h>
 #include <cloud/contrib/vhost/include/vhost/server.h>
 
+#include <util/datetime/base.h>
 #include <util/generic/singleton.h>
 #include <util/system/mutex.h>
+
+#include <atomic>
 
 namespace NCloud::NBlockStore::NVhost {
 
@@ -16,7 +19,7 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TLog VhostLog;
+std::atomic<TLog*> VhostLog;
 
 ELogPriority GetLogPriority(LogLevel level)
 {
@@ -34,8 +37,9 @@ void vhd_log(LogLevel level, const char* format, ...)
     va_start(params, format);
 
     ELogPriority priority = GetLogPriority(level);
-    if (priority <= VhostLog.FiltrationLevel()) {
-        Printf(VhostLog << priority << ": ", format, params);
+    TLog* log = VhostLog.load();
+    if (priority <= log->FiltrationLevel()) {
+        Printf(*log << priority << ": ", format, params);
     }
 
     va_end(params);
@@ -184,10 +188,10 @@ public:
 
         auto result = NewPromise<NProto::TError>();
 
-        auto& Log = VhostLog;
+        auto& Log = *VhostLog.load();
         STORAGE_INFO("vhd_unregister_blockdev starting: " << SocketPath);
-        result.GetFuture().Apply([socketPath = SocketPath] (const auto& future) {
-            auto& Log = VhostLog;
+
+        result.GetFuture().Apply([socketPath = SocketPath, &Log = Log] (const auto& future) {
             STORAGE_INFO("vhd_unregister_blockdev completed: " << socketPath);
             return future;
         });
@@ -227,7 +231,7 @@ private:
 
 public:
     TVhostQueue()
-        : Log(VhostLog)
+        : Log(*VhostLog.load())
     {
         VhdRequestQueue = vhd_create_request_queue();
     }
@@ -361,7 +365,15 @@ public:
 
 void InitVhostLog(ILoggingServicePtr logging)
 {
-    VhostLog = logging->CreateLog("BLOCKSTORE_VHOST");
+    auto tmp = std::make_unique<TLog>(logging->CreateLog("BLOCKSTORE_VHOST"));
+    TLog* expected = nullptr;
+    if (!VhostLog.compare_exchange_strong(expected, tmp.get()))
+    {
+        // Logger already initialized. Ignore subsequent invocations.
+        return;
+    }
+
+    Y_UNUSED(tmp.release());
 }
 
 IVhostQueueFactoryPtr CreateVhostQueueFactory()
