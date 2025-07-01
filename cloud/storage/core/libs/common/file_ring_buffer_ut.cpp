@@ -152,6 +152,11 @@ struct TReferenceImplementation
     {
         return TVector<TFileRingBuffer::TBrokenFileEntry>();
     }
+
+    bool IsCorrupted() const
+    {
+        return false;
+    }
 };
 
 }   // namespace
@@ -224,6 +229,8 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         UNIT_ASSERT_VALUES_EQUAL("", Dump(rb.Validate()));
         UNIT_ASSERT_VALUES_EQUAL(0, rb.Size());
         UNIT_ASSERT(rb.Empty());
+
+        UNIT_ASSERT(!rb.IsCorrupted());
     }
 
     Y_UNIT_TEST(ShouldPushPop)
@@ -259,6 +266,7 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         rb->PopFront();
         UNIT_ASSERT(rb->PushBack("vasya3"));
         UNIT_ASSERT(rb->PushBack("xxx"));
+        UNIT_ASSERT(!rb->IsCorrupted());
 
         rb = std::make_unique<TFileRingBuffer>(
             f.GetName(),
@@ -268,6 +276,7 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         UNIT_ASSERT_VALUES_EQUAL(4, rb->Size());
 
         UNIT_ASSERT_VALUES_EQUAL("vasya2, petya2, vasya3, xxx", PopAll(*rb));
+        UNIT_ASSERT(!rb->IsCorrupted());
     }
 
     Y_UNIT_TEST(ShouldValidate)
@@ -290,6 +299,8 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         UNIT_ASSERT_VALUES_EQUAL(
             "data=vasya ecsum=3387363649 csum=3387363646",
             Dump(rb.Validate()));
+
+        UNIT_ASSERT(!rb.IsCorrupted());
     }
 
     Y_UNIT_TEST(ShouldIgnoreSlackSpaceSmallerThanEntryHeader)
@@ -317,6 +328,7 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
          */
 
         UNIT_ASSERT_VALUES_EQUAL("", Dump(rb.Validate()));
+        UNIT_ASSERT(!rb.IsCorrupted());
     }
 
     void DoRandomizedPushPopRestore(
@@ -404,6 +416,7 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         rb.PopFront();
         UNIT_ASSERT(rb.PushBack(data3));
         UNIT_ASSERT(rb.PushBack(data4));
+        UNIT_ASSERT(!rb.IsCorrupted());
     }
 
     Y_UNIT_TEST(ShouldNotAccessMemoryOutsideMappedBuffer)
@@ -423,6 +436,7 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         UNIT_ASSERT(rb.PushBack("01"));
         rb.PopFront();
         UNIT_ASSERT_VALUES_EQUAL("01", rb.Front());
+        UNIT_ASSERT(!rb.IsCorrupted());
     }
 
     struct TStateWithCorruptedEntryLength
@@ -464,6 +478,136 @@ Y_UNIT_TEST_SUITE(TFileRingBufferTest)
         TStateWithCorruptedEntryLength bad(1);
         TFileRingBuffer rb2(bad.F.GetName(), bad.Len);
         UNIT_ASSERT(!rb2.PushBack("c"));
+    }
+
+    Y_UNIT_TEST(ShouldNotCycleInCaseOfCorruption)
+    {
+        TStateWithCorruptedEntryLength s(0);
+        UNIT_ASSERT_VALUES_EQUAL("aaa", s.Rb.Front());
+        s.Rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", s.Rb.Front());
+        UNIT_ASSERT(s.Rb.IsCorrupted());
+
+        TStateWithCorruptedEntryLength s2(0);
+        TFileRingBuffer rb(s2.F.GetName(), s2.Len);
+        UNIT_ASSERT_VALUES_EQUAL(1, rb.Size());
+        UNIT_ASSERT(rb.IsCorrupted());
+        UNIT_ASSERT_VALUES_EQUAL("aaa", rb.Front());
+        rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", rb.Front());
+    }
+
+    Y_UNIT_TEST(ShouldDetectCorruptionWhenEntryLengthIsDecreased)
+    {
+        TStateWithCorruptedEntryLength s(1);
+        UNIT_ASSERT_VALUES_EQUAL("aaa", s.Rb.Front());
+        s.Rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("b", s.Rb.Front());
+        s.Rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", s.Rb.Front());
+        UNIT_ASSERT(s.Rb.IsCorrupted());
+
+        TStateWithCorruptedEntryLength s2(1);
+        TFileRingBuffer rb(s2.F.GetName(), s2.Len);
+        UNIT_ASSERT_VALUES_EQUAL(2, rb.Size());
+        UNIT_ASSERT(rb.IsCorrupted());
+        UNIT_ASSERT_VALUES_EQUAL("aaa", rb.Front());
+        rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("b", rb.Front());
+        rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", rb.Front());
+    }
+
+    Y_UNIT_TEST(ShouldNotReadBeyondWritePosInCaseOfCorruption)
+    {
+        TStateWithCorruptedEntryLength s(3);
+        UNIT_ASSERT_VALUES_EQUAL("aaa", s.Rb.Front());
+        s.Rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", s.Rb.Front());
+        UNIT_ASSERT(s.Rb.IsCorrupted());
+
+        TStateWithCorruptedEntryLength s2(3);
+        TFileRingBuffer rb(s2.F.GetName(), s2.Len);
+        UNIT_ASSERT_VALUES_EQUAL(1, rb.Size());
+        UNIT_ASSERT(rb.IsCorrupted());
+        UNIT_ASSERT_VALUES_EQUAL("aaa", rb.Front());
+        rb.PopFront();
+        UNIT_ASSERT_VALUES_EQUAL("", rb.Front());
+    }
+
+    Y_UNIT_TEST(ShouldNotAcceptNewDataInCaseOfCorruption)
+    {
+        TStateWithCorruptedEntryLength s(1);
+        TFileRingBuffer rb(s.F.GetName(), s.Len);
+        UNIT_ASSERT_VALUES_EQUAL(2, rb.Size());
+        UNIT_ASSERT(rb.IsCorrupted());
+        UNIT_ASSERT(!rb.PushBack("c"));
+    }
+
+    Y_UNIT_TEST(ShouldSetCorruptionFlagAtPopFrontWhenCountMoreThanExpected)
+    {
+        const auto f = TTempFileHandle();
+        const ui32 len = 32;
+        TFileRingBuffer rb(f.GetName(), len);
+
+        UNIT_ASSERT(rb.PushBack("aaa"));
+        UNIT_ASSERT(rb.PushBack("bb"));
+
+        TFileRingBuffer rb2(f.GetName(), len);
+        rb2.PopFront();
+
+        rb.PopFront();
+        UNIT_ASSERT(rb.IsCorrupted());
+    }
+
+    Y_UNIT_TEST(ShouldSetCorruptionFlagAtValidateWhenCountMoreThanExpected)
+    {
+        const auto f = TTempFileHandle();
+        const ui32 len = 32;
+        TFileRingBuffer rb(f.GetName(), len);
+
+        UNIT_ASSERT(rb.PushBack("aaa"));
+        UNIT_ASSERT(rb.PushBack("bb"));
+
+        TFileRingBuffer rb2(f.GetName(), len);
+        rb2.PopFront();
+
+        rb.Validate();
+        UNIT_ASSERT(rb.IsCorrupted());
+    }
+
+    Y_UNIT_TEST(ShouldSetCorruptionFlagAtPopFrontWhenCountLessThanExpected)
+    {
+        const auto f = TTempFileHandle();
+        const ui32 len = 32;
+        TFileRingBuffer rb(f.GetName(), len);
+
+        UNIT_ASSERT(rb.PushBack("aaa"));
+        UNIT_ASSERT(rb.PushBack("bb"));
+
+        TFileRingBuffer rb2(f.GetName(), len);
+        UNIT_ASSERT(rb2.PushBack("c"));
+
+        rb.PopFront();
+        rb.PopFront();
+        rb.PopFront();
+        UNIT_ASSERT(rb.IsCorrupted());
+    }
+
+    Y_UNIT_TEST(ShouldSetCorruptionFlagAtValidateWhenCountLessThanExpected)
+    {
+        const auto f = TTempFileHandle();
+        const ui32 len = 32;
+        TFileRingBuffer rb(f.GetName(), len);
+
+        UNIT_ASSERT(rb.PushBack("aaa"));
+        UNIT_ASSERT(rb.PushBack("bb"));
+
+        TFileRingBuffer rb2(f.GetName(), len);
+        UNIT_ASSERT(rb2.PushBack("c"));
+
+        rb.Validate();
+        UNIT_ASSERT(rb.IsCorrupted());
     }
 }
 
